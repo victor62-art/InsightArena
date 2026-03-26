@@ -47,7 +47,10 @@ export class LeaderboardService {
     const data: LeaderboardEntryResponse[] = entries.map((entry) => {
       const accuracyRate =
         entry.total_predictions > 0
-          ? ((entry.correct_predictions / entry.total_predictions) * 100).toFixed(1)
+          ? (
+              (entry.correct_predictions / entry.total_predictions) *
+              100
+            ).toFixed(1)
           : '0.0';
 
       return {
@@ -76,7 +79,9 @@ export class LeaderboardService {
     const users = await this.usersRepository.find();
 
     // Sort users by reputation_score descending for global ranking
-    const sorted = [...users].sort((a, b) => b.reputation_score - a.reputation_score);
+    const sorted = [...users].sort(
+      (a, b) => b.reputation_score - a.reputation_score,
+    );
 
     await this.dataSource.transaction(async (manager) => {
       for (let i = 0; i < sorted.length; i++) {
@@ -85,7 +90,9 @@ export class LeaderboardService {
 
         const existing = await manager
           .createQueryBuilder(LeaderboardEntry, 'entry')
-          .where('entry.user_id = :userId AND entry.season_id IS NULL', { userId: user.id })
+          .where('entry.user_id = :userId AND entry.season_id IS NULL', {
+            userId: user.id,
+          })
           .getOne();
 
         if (existing) {

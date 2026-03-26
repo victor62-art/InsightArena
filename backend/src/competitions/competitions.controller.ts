@@ -30,8 +30,15 @@ export class CompetitionsController {
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create a new competition' })
-  @ApiResponse({ status: 201, description: 'Competition created', type: Competition })
-  @ApiResponse({ status: 400, description: 'Validation error (e.g. end_time before start_time)' })
+  @ApiResponse({
+    status: 201,
+    description: 'Competition created',
+    type: Competition,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation error (e.g. end_time before start_time)',
+  })
   async createCompetition(
     @Body() dto: CreateCompetitionDto,
     @CurrentUser() user: User,

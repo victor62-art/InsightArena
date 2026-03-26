@@ -40,7 +40,9 @@ export class CreateNotificationEntity1774500000000 implements MigrationInterface
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`ALTER TABLE "notifications" DROP CONSTRAINT "FK_notifications_user"`);
+    await queryRunner.query(
+      `ALTER TABLE "notifications" DROP CONSTRAINT "FK_notifications_user"`,
+    );
     await queryRunner.query(`DROP INDEX "IDX_notifications_user_id"`);
     await queryRunner.query(`DROP TABLE "notifications"`);
     await queryRunner.query(`DROP TYPE "public"."notifications_type_enum"`);

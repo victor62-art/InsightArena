@@ -38,7 +38,9 @@ export class CreateLeaderboardEntryEntity1774500002000 implements MigrationInter
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`ALTER TABLE "leaderboard_entries" DROP CONSTRAINT "FK_leaderboard_entries_user"`);
+    await queryRunner.query(
+      `ALTER TABLE "leaderboard_entries" DROP CONSTRAINT "FK_leaderboard_entries_user"`,
+    );
     await queryRunner.query(`DROP INDEX "IDX_leaderboard_entries_season_rank"`);
     await queryRunner.query(`DROP INDEX "IDX_leaderboard_entries_user_id"`);
     await queryRunner.query(`DROP TABLE "leaderboard_entries"`);

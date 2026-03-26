@@ -39,9 +39,13 @@ export class CreateCompetitionEntity1774500001000 implements MigrationInterface 
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`ALTER TABLE "competitions" DROP CONSTRAINT "FK_competitions_creator"`);
+    await queryRunner.query(
+      `ALTER TABLE "competitions" DROP CONSTRAINT "FK_competitions_creator"`,
+    );
     await queryRunner.query(`DROP INDEX "IDX_competitions_visibility"`);
     await queryRunner.query(`DROP TABLE "competitions"`);
-    await queryRunner.query(`DROP TYPE "public"."competitions_visibility_enum"`);
+    await queryRunner.query(
+      `DROP TYPE "public"."competitions_visibility_enum"`,
+    );
   }
 }

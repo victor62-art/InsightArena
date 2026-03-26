@@ -39,7 +39,11 @@ export class Competition {
   max_participants: number;
 
   @Index()
-  @Column({ type: 'enum', enum: CompetitionVisibility, default: CompetitionVisibility.Public })
+  @Column({
+    type: 'enum',
+    enum: CompetitionVisibility,
+    default: CompetitionVisibility.Public,
+  })
   visibility: CompetitionVisibility;
 
   @Column({ nullable: true, unique: true })

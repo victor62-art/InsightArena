@@ -10,7 +10,11 @@ export class LeaderboardQueryDto {
   @Min(1)
   page?: number = 1;
 
-  @ApiPropertyOptional({ description: 'Results per page (max 100)', default: 20, maximum: 100 })
+  @ApiPropertyOptional({
+    description: 'Results per page (max 100)',
+    default: 20,
+    maximum: 100,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -18,7 +22,9 @@ export class LeaderboardQueryDto {
   @Max(100)
   limit?: number = 20;
 
-  @ApiPropertyOptional({ description: 'Filter by season ID (omit for all-time leaderboard)' })
+  @ApiPropertyOptional({
+    description: 'Filter by season ID (omit for all-time leaderboard)',
+  })
   @IsOptional()
   @IsString()
   season_id?: string;

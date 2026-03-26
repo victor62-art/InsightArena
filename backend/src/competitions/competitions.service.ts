@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Competition, CompetitionVisibility } from './entities/competition.entity';
+import {
+  Competition,
+  CompetitionVisibility,
+} from './entities/competition.entity';
 import { CreateCompetitionDto } from './dto/create-competition.dto';
 import { User } from '../users/entities/user.entity';
 
@@ -30,7 +33,7 @@ export class CompetitionsService {
       creator: user,
     });
 
-    return this.competitionsRepository.save(competition) as Promise<Competition>;
+    return this.competitionsRepository.save(competition);
   }
 
   async findAll(): Promise<Competition[]> {

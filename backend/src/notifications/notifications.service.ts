@@ -31,7 +31,12 @@ export class NotificationsService {
     userId: string,
     page = 1,
     limit = 20,
-  ): Promise<{ data: Notification[]; total: number; page: number; limit: number }> {
+  ): Promise<{
+    data: Notification[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
     const take = Math.min(limit, 100);
     const skip = (page - 1) * take;
 

@@ -55,13 +55,19 @@ export class CreateCompetitionDto {
   @IsNumberString()
   prize_pool_stroops: string;
 
-  @ApiPropertyOptional({ description: 'Max number of participants', example: 100 })
+  @ApiPropertyOptional({
+    description: 'Max number of participants',
+    example: 100,
+  })
   @IsOptional()
   @IsInt()
   @Min(2)
   max_participants?: number;
 
-  @ApiProperty({ enum: CompetitionVisibility, example: CompetitionVisibility.Public })
+  @ApiProperty({
+    enum: CompetitionVisibility,
+    example: CompetitionVisibility.Public,
+  })
   @IsEnum(CompetitionVisibility)
   visibility: CompetitionVisibility;
 }
