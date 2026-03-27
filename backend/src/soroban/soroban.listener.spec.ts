@@ -10,7 +10,6 @@ import { SystemState } from './entities/system-state.entity';
 describe('SorobanListener', () => {
   let listener: SorobanListener;
   let sorobanService: jest.Mocked<SorobanService>;
-  let getEventsMock: jest.MockedFunction<SorobanService['getEvents']>;
 
   const marketRepository = {
     findOne: jest.fn(),
@@ -64,7 +63,6 @@ describe('SorobanListener', () => {
 
     listener = module.get<SorobanListener>(SorobanListener);
     sorobanService = module.get(SorobanService);
-    getEventsMock = sorobanService.getEvents;
 
     jest.clearAllMocks();
   });
@@ -74,6 +72,8 @@ describe('SorobanListener', () => {
   });
 
   it('persists latest ledger even when no events are returned', async () => {
+    const getEventsSpy = jest.spyOn(sorobanService, 'getEvents');
+
     systemStateRepository.findOne.mockResolvedValue({
       key: 'soroban:last_processed_ledger',
       value: '100',
@@ -85,7 +85,7 @@ describe('SorobanListener', () => {
 
     await listener.pollEvents();
 
-    expect(getEventsMock).toHaveBeenCalledWith(101);
+    expect(getEventsSpy).toHaveBeenCalledWith(101);
     expect(systemStateRepository.upsert).toHaveBeenCalledWith(
       { key: 'soroban:last_processed_ledger', value: '120' },
       ['key'],
