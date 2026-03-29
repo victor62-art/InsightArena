@@ -5,10 +5,11 @@ import { Repository } from 'typeorm';
 import { UsersService } from './users.service';
 import { User } from './entities/user.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
+import { Market } from '../markets/entities/market.entity';
+import { Notification } from '../notifications/entities/notification.entity';
 import { ListUserPredictionsDto } from './dto/list-user-predictions.dto';
 import { CompetitionParticipant } from '../competitions/entities/competition-participant.entity';
 import { UserCompetitionFilterStatus } from './dto/list-user-competitions.dto';
-import { Market } from '../markets/entities/market.entity';
 import {
   ListUserMarketsDto,
   UserMarketFilterStatus,
@@ -59,18 +60,27 @@ describe('UsersService', () => {
           provide: getRepositoryToken(Prediction),
           useValue: {
             createQueryBuilder: jest.fn(),
+            find: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(Market),
+          useValue: {
+            find: jest.fn(),
+            createQueryBuilder: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(Notification),
+          useValue: {
+            find: jest.fn(),
           },
         },
         {
           provide: getRepositoryToken(CompetitionParticipant),
           useValue: {
             createQueryBuilder: jest.fn(),
-          },
-        },
-        {
-          provide: getRepositoryToken(Market),
-          useValue: {
-            createQueryBuilder: jest.fn(),
+            find: jest.fn(),
           },
         },
       ],
