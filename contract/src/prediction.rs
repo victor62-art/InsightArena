@@ -1,8 +1,10 @@
 use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 
+use crate::analytics;
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
+use crate::leaderboard;
 use crate::season;
 use crate::storage_types::{DataKey, Market, Prediction, UserProfile};
 use crate::ttl;
@@ -10,11 +12,7 @@ use crate::ttl;
 // ── TTL helpers ───────────────────────────────────────────────────────────────
 
 fn bump_prediction(env: &Env, market_id: u64, predictor: &Address) {
-    env.storage().persistent().extend_ttl(
-        &DataKey::Prediction(market_id, predictor.clone()),
-        PERSISTENT_THRESHOLD,
-        PERSISTENT_BUMP,
-    );
+    ttl::extend_prediction_ttl(env, market_id, predictor);
 }
 
 fn bump_market(env: &Env, market_id: u64) {
@@ -82,12 +80,10 @@ fn compute_payout_breakdown(
     protocol_fee_bps: u32,
     creator_fee_bps: u32,
 ) -> Result<(i128, i128, i128), InsightArenaError> {
-    let payout_ratio = stake_amount
-        .checked_div(winning_pool)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    let winner_share = payout_ratio
+    let winner_share = stake_amount
         .checked_mul(loser_pool)
+        .ok_or(InsightArenaError::Overflow)?
+        .checked_div(winning_pool)
         .ok_or(InsightArenaError::Overflow)?;
 
     let gross_payout = stake_amount
@@ -115,10 +111,11 @@ fn compute_payout_breakdown(
     Ok((net_payout, protocol_fee, creator_fee))
 }
 
-fn update_winner_profile(
+fn apply_winner_payout(
     env: &Env,
     predictor: &Address,
     net_payout: i128,
+    stake_amount: i128,
 ) -> Result<(), InsightArenaError> {
     let user_key = DataKey::User(predictor.clone());
     let mut profile: UserProfile = env
@@ -132,16 +129,19 @@ fn update_winner_profile(
         .checked_add(net_payout)
         .ok_or(InsightArenaError::Overflow)?;
 
-    let points_i128 = net_payout
-        .checked_div(10_000_000)
+    profile.correct_predictions = profile
+        .correct_predictions
+        .checked_add(1)
         .ok_or(InsightArenaError::Overflow)?;
-    if points_i128 > u32::MAX as i128 {
-        return Err(InsightArenaError::Overflow);
-    }
 
+    let points = leaderboard::calculate_points(
+        stake_amount,
+        profile.correct_predictions,
+        profile.total_predictions,
+    );
     profile.season_points = profile
         .season_points
-        .checked_add(points_i128 as u32)
+        .checked_add(points)
         .ok_or(InsightArenaError::Overflow)?;
 
     env.storage().persistent().set(&user_key, &profile);
@@ -234,6 +234,9 @@ pub fn submit_prediction(
     // ── Lock stake in escrow (transfer XLM from predictor to contract) ────────
     escrow::lock_stake(env, &predictor, stake_amount)?;
 
+    // ── Track cumulative platform volume ──────────────────────────────────────
+    analytics::add_volume(env, stake_amount);
+
     // ── Store Prediction record ───────────────────────────────────────────────
     let prediction = Prediction::new(
         market_id,
@@ -316,10 +319,16 @@ pub fn get_prediction(
         .storage()
         .persistent()
         .get(&key)
+        .or_else(|| env.storage().temporary().get(&key))
         .ok_or(InsightArenaError::PredictionNotFound)?;
 
-    // Extend TTL so an active read keeps the record alive.
-    bump_prediction(env, market_id, &predictor);
+    if env.storage().persistent().has(&key) {
+        // Before claim, keep full market-lifetime TTL.
+        bump_prediction(env, market_id, &predictor);
+    } else if env.storage().temporary().has(&key) {
+        // After claim, keep short-lived cleanup TTL.
+        ttl::shorten_prediction_ttl_after_claim(env, market_id, &predictor);
+    }
 
     Ok(prediction)
 }
@@ -340,7 +349,11 @@ pub fn get_prediction(
 pub fn has_predicted(env: &Env, market_id: u64, predictor: Address) -> bool {
     env.storage()
         .persistent()
-        .has(&DataKey::Prediction(market_id, predictor))
+        .has(&DataKey::Prediction(market_id, predictor.clone()))
+        || env
+            .storage()
+            .temporary()
+            .has(&DataKey::Prediction(market_id, predictor))
 }
 
 /// Return all [`Prediction`] records for a given market.
@@ -419,6 +432,7 @@ pub fn claim_payout(
         .storage()
         .persistent()
         .get(&prediction_key)
+        .or_else(|| env.storage().temporary().get(&prediction_key))
         .ok_or(InsightArenaError::PredictionNotFound)?;
 
     if prediction.payout_claimed {
@@ -438,7 +452,12 @@ pub fn claim_payout(
     let mut winning_pool: i128 = 0;
     for address in predictors.iter() {
         let key = DataKey::Prediction(market_id, address.clone());
-        if let Some(item) = env.storage().persistent().get::<DataKey, Prediction>(&key) {
+        if let Some(item) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Prediction>(&key)
+            .or_else(|| env.storage().temporary().get::<DataKey, Prediction>(&key))
+        {
             if item.chosen_outcome == resolved_outcome {
                 winning_pool = winning_pool
                     .checked_add(item.stake_amount)
@@ -456,13 +475,11 @@ pub fn claim_payout(
         .checked_sub(winning_pool)
         .ok_or(InsightArenaError::Overflow)?;
 
-    let payout_ratio = prediction
+    let winner_share = prediction
         .stake_amount
-        .checked_div(winning_pool)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    let winner_share = payout_ratio
         .checked_mul(loser_pool)
+        .ok_or(InsightArenaError::Overflow)?
+        .checked_div(winning_pool)
         .ok_or(InsightArenaError::Overflow)?;
 
     let gross_payout = prediction
@@ -494,7 +511,6 @@ pub fn claim_payout(
         escrow::release_payout(env, &predictor, net_payout)?;
     }
     if protocol_fee > 0 {
-        escrow::refund(env, &cfg.admin, protocol_fee)?;
         escrow::add_to_treasury_balance(env, protocol_fee);
     }
     if creator_fee > 0 {
@@ -503,8 +519,9 @@ pub fn claim_payout(
 
     prediction.payout_claimed = true;
     prediction.payout_amount = net_payout;
-    env.storage().persistent().set(&prediction_key, &prediction);
-    bump_prediction(env, market_id, &predictor);
+    env.storage().persistent().remove(&prediction_key);
+    env.storage().temporary().set(&prediction_key, &prediction);
+    ttl::shorten_prediction_ttl_after_claim(env, market_id, &predictor);
 
     let user_key = DataKey::User(predictor.clone());
     let mut profile: UserProfile = env
@@ -518,13 +535,16 @@ pub fn claim_payout(
         .checked_add(net_payout)
         .ok_or(InsightArenaError::Overflow)?;
 
-    let points_i128 = net_payout
-        .checked_div(10_000_000)
+    profile.correct_predictions = profile
+        .correct_predictions
+        .checked_add(1)
         .ok_or(InsightArenaError::Overflow)?;
-    if points_i128 > u32::MAX as i128 {
-        return Err(InsightArenaError::Overflow);
-    }
-    let points: u32 = points_i128 as u32;
+
+    let points = leaderboard::calculate_points(
+        prediction.stake_amount,
+        profile.correct_predictions,
+        profile.total_predictions,
+    );
     profile.season_points = profile
         .season_points
         .checked_add(points)
@@ -637,7 +657,6 @@ pub fn batch_distribute_payouts(
             escrow::release_payout(env, &stored_prediction.predictor, net_payout)?;
         }
         if protocol_fee > 0 {
-            escrow::refund(env, &cfg.admin, protocol_fee)?;
             escrow::add_to_treasury_balance(env, protocol_fee);
         }
         if creator_fee > 0 {
@@ -646,12 +665,18 @@ pub fn batch_distribute_payouts(
 
         stored_prediction.payout_claimed = true;
         stored_prediction.payout_amount = net_payout;
+        env.storage().persistent().remove(&prediction_key);
         env.storage()
-            .persistent()
+            .temporary()
             .set(&prediction_key, &stored_prediction);
-        bump_prediction(env, market_id, &stored_prediction.predictor);
+        ttl::shorten_prediction_ttl_after_claim(env, market_id, &stored_prediction.predictor);
 
-        update_winner_profile(env, &stored_prediction.predictor, net_payout)?;
+        apply_winner_payout(
+            env,
+            &stored_prediction.predictor,
+            net_payout,
+            stored_prediction.stake_amount,
+        )?;
 
         processed = processed
             .checked_add(1)
@@ -706,6 +731,7 @@ mod prediction_tests {
             outcomes: vec![env, symbol_short!("yes"), symbol_short!("no")],
             end_time: now + 1000,
             resolution_time: now + 2000,
+            dispute_window: 86_400,
             creator_fee_bps: 100,
             min_stake: 10_000_000,
             max_stake: 100_000_000,

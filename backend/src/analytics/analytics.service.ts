@@ -1,99 +1,180 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan, Brackets } from 'typeorm';
+import { Repository } from 'typeorm';
+import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.entity';
 import { Market } from '../markets/entities/market.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { User } from '../users/entities/user.entity';
+import { ActivityLog } from './entities/activity-log.entity';
+import { DashboardKpisDto } from './dto/dashboard-kpis.dto';
+import {
+  MarketAnalyticsDto,
+  OutcomeDistributionDto,
+} from './dto/market-analytics.dto';
+
+/** Tier thresholds: Bronze < 200, Silver < 500, Gold < 1000, Platinum ≥ 1000 */
+export function predictorTierFromReputation(reputationScore: number): string {
+  if (reputationScore < 200) return 'Bronze Predictor';
+  if (reputationScore < 500) return 'Silver Predictor';
+  if (reputationScore < 1000) return 'Gold Predictor';
+  return 'Platinum Predictor';
+}
+
+export function accuracyRateFromUser(user: User): string {
+  if (user.total_predictions <= 0) return '0.0';
+  return ((user.correct_predictions / user.total_predictions) * 100).toFixed(1);
+}
 
 @Injectable()
 export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name);
-  private cache: { data: any; timestamp: number } | null = null;
-  private readonly CACHE_TTL = 10 * 60 * 1000; // 10 minutes in milliseconds
 
   constructor(
-    @InjectRepository(Market)
-    private readonly marketRepository: Repository<Market>,
-    @InjectRepository(Prediction)
-    private readonly predictionRepository: Repository<Prediction>,
     @InjectRepository(User)
-    private readonly userRepository: Repository<User>,
+    private readonly usersRepository: Repository<User>,
+    @InjectRepository(Prediction)
+    private readonly predictionsRepository: Repository<Prediction>,
+    @InjectRepository(LeaderboardEntry)
+    private readonly leaderboardRepository: Repository<LeaderboardEntry>,
+    @InjectRepository(Market)
+    private readonly marketsRepository: Repository<Market>,
+    @InjectRepository(ActivityLog)
+    private readonly activityLogsRepository: Repository<ActivityLog>,
   ) {}
 
-  async getPlatformAnalytics() {
-    const now = Date.now();
-
-    if (this.cache && now - this.cache.timestamp < this.CACHE_TTL) {
-      this.logger.log('Returning platform analytics from cache');
-      return this.cache.data;
-    }
-
-    this.logger.log('Fetching platform analytics from database');
-    const data = await this.aggregatePlatformStats();
-    this.cache = { data, timestamp: now };
-
-    return data;
+  async logActivity(
+    userId: string,
+    actionType: string,
+    details?: Record<string, unknown> | null,
+    ipAddress?: string,
+  ) {
+    const log = this.activityLogsRepository.create({
+      userId,
+      actionType,
+      actionDetails: details,
+      ipAddress,
+    });
+    return this.activityLogsRepository.save(log);
   }
 
-  private async aggregatePlatformStats() {
-    const now = new Date();
-    const last24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const last7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  async getDashboard(user: User): Promise<DashboardKpisDto> {
+    const fullUser = await this.usersRepository.findOne({
+      where: { id: user.id },
+    });
+    if (!fullUser) {
+      throw new NotFoundException('User not found');
+    }
 
-    const [
-      total_markets,
-      active_markets,
-      total_predictions,
-      total_users,
-      volumeResult,
-      markets_by_category,
-      predictions_24h,
-      new_users_7d,
-    ] = await Promise.all([
-      this.marketRepository.count(),
-      this.marketRepository.count({
-        where: {
-          is_resolved: false,
-          is_cancelled: false,
-          end_time: MoreThan(now),
-        },
-      }),
-      this.predictionRepository.count(),
-      this.userRepository.count(),
-      this.marketRepository
-        .createQueryBuilder('market')
-        .select('SUM(CAST(market.total_pool_stroops AS NUMERIC))', 'sum')
-        .getRawOne(),
-      this.marketRepository
-        .createQueryBuilder('market')
-        .select('market.category', 'category')
-        .addSelect('COUNT(*)', 'count')
-        .groupBy('market.category')
-        .getRawMany(),
-      this.predictionRepository.count({
-        where: {
-          submitted_at: MoreThan(last24h),
-        },
-      }),
-      this.userRepository.count({
-        where: {
-          created_at: MoreThan(last7d),
-        },
-      }),
-    ]);
+    const latestGlobalEntry = await this.leaderboardRepository
+      .createQueryBuilder('entry')
+      .where('entry.user_id = :userId', { userId: fullUser.id })
+      .andWhere('entry.season_id IS NULL')
+      .orderBy('entry.updated_at', 'DESC')
+      .getOne();
+
+    const active_predictions_count = await this.predictionsRepository
+      .createQueryBuilder('prediction')
+      .innerJoin('prediction.market', 'market')
+      .where('prediction.userId = :userId', { userId: fullUser.id })
+      .andWhere('market.is_resolved = false')
+      .andWhere('market.is_cancelled = false')
+      .getCount();
+
+    const resolvedPredictions = await this.predictionsRepository
+      .createQueryBuilder('prediction')
+      .innerJoinAndSelect('prediction.market', 'market')
+      .where('prediction.userId = :userId', { userId: fullUser.id })
+      .andWhere('market.is_resolved = true')
+      .andWhere('market.is_cancelled = false')
+      .orderBy('market.resolution_time', 'DESC')
+      .addOrderBy('prediction.submitted_at', 'DESC')
+      .getMany();
+
+    const current_streak =
+      this.computeWinStreakFromResolved(resolvedPredictions);
+
+    const reputation_score = fullUser.reputation_score;
 
     return {
-      total_markets,
-      active_markets,
-      total_predictions,
-      total_users,
-      total_volume_stroops: volumeResult?.sum?.toString() || '0',
-      markets_by_category: markets_by_category.map((m) => ({
-        category: m.category,
-        count: parseInt(m.count, 10),
-      })),
-      predictions_24h,
-      new_users_7d,
+      total_predictions: fullUser.total_predictions,
+      accuracy_rate: accuracyRateFromUser(fullUser),
+      current_rank: latestGlobalEntry?.rank ?? 0,
+      total_rewards_earned_stroops: String(fullUser.total_winnings_stroops),
+      active_predictions_count,
+      current_streak,
+      reputation_score,
+      tier: predictorTierFromReputation(reputation_score),
+    };
+  }
+
+  private computeWinStreakFromResolved(predictions: Prediction[]): number {
+    let streak = 0;
+    for (const p of predictions) {
+      const m = p.market;
+      if (!m?.resolved_outcome) break;
+      if (p.chosen_outcome === m.resolved_outcome) streak += 1;
+      else break;
+    }
+    return streak;
+  }
+
+  /**
+   * Get market analytics: pool size, participant count, outcome distribution, and time remaining
+   */
+  async getMarketAnalytics(marketId: string): Promise<MarketAnalyticsDto> {
+    const market = await this.marketsRepository.findOne({
+      where: [{ id: marketId }, { on_chain_market_id: marketId }],
+    });
+
+    if (!market) {
+      throw new NotFoundException(`Market "${marketId}" not found`);
+    }
+
+    const predictions = await this.predictionsRepository.find({
+      where: { market: { id: market.id } },
+    });
+
+    const outcomeCounts = new Map<string, number>();
+
+    market.outcome_options.forEach((outcome) => {
+      outcomeCounts.set(outcome, 0);
+    });
+
+    predictions.forEach((prediction) => {
+      const currentCount = outcomeCounts.get(prediction.chosen_outcome) || 0;
+      outcomeCounts.set(prediction.chosen_outcome, currentCount + 1);
+    });
+
+    const total = predictions.length;
+    const outcomeDistribution: OutcomeDistributionDto[] = Array.from(
+      outcomeCounts.entries(),
+    ).map(([outcome, count]) => {
+      const percentage =
+        total > 0 ? Math.round((count / total) * 100 * 100) / 100 : 0;
+      return {
+        outcome,
+        count,
+        percentage,
+      };
+    });
+
+    const now = new Date().getTime();
+    const endTime = new Date(market.end_time).getTime();
+    const timeRemainingSeconds = Math.max(
+      0,
+      Math.floor((endTime - now) / 1000),
+    );
+
+    this.logger.log(
+      `Market analytics retrieved for "${market.title}" (${market.id}) - ${predictions.length} predictions`,
+    );
+
+    return {
+      market_id: market.id,
+      total_pool_stroops: market.total_pool_stroops,
+      participant_count: market.participant_count,
+      outcome_distribution: outcomeDistribution,
+      time_remaining_seconds: timeRemainingSeconds,
     };
   }
 }
