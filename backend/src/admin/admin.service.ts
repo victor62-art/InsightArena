@@ -10,7 +10,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Repository } from 'typeorm';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { ActivityLog } from '../analytics/entities/activity-log.entity';
+import { CompetitionParticipant } from '../competitions/entities/competition-participant.entity';
 import { Competition } from '../competitions/entities/competition.entity';
+import { ListFlagsQueryDto } from '../flags/dto/list-flags-query.dto';
+import { ResolveFlagDto } from '../flags/dto/resolve-flag.dto';
+import { FlagsService } from '../flags/flags.service';
 import { Comment } from '../markets/entities/comment.entity';
 import { Market } from '../markets/entities/market.entity';
 import { NotificationType } from '../notifications/entities/notification.entity';
@@ -45,6 +49,8 @@ export class AdminService {
     private readonly predictionsRepository: Repository<Prediction>,
     @InjectRepository(Competition)
     private readonly competitionsRepository: Repository<Competition>,
+    @InjectRepository(CompetitionParticipant)
+    private readonly competitionParticipantsRepository: Repository<CompetitionParticipant>,
     @InjectRepository(ActivityLog)
     private readonly activityLogsRepository: Repository<ActivityLog>,
     @InjectRepository(SystemConfig)
@@ -52,6 +58,7 @@ export class AdminService {
     private readonly analyticsService: AnalyticsService,
     private readonly notificationsService: NotificationsService,
     private readonly sorobanService: SorobanService,
+    private readonly flagsService: FlagsService,
   ) {}
 
   async getConfig(): Promise<SystemConfigValues> {
@@ -279,6 +286,18 @@ export class AdminService {
     };
   }
 
+  async listFlags(query: ListFlagsQueryDto) {
+    return this.flagsService.listFlags(query);
+  }
+
+  async resolveFlag(
+    flagId: string,
+    resolveFlagDto: ResolveFlagDto,
+    adminId: string,
+  ) {
+    return this.flagsService.resolveFlag(flagId, resolveFlagDto, adminId);
+  }
+
   async adminResolveMarket(
     id: string,
     dto: ResolveMarketDto,
@@ -366,6 +385,112 @@ export class AdminService {
     );
 
     return saved;
+  }
+
+  async adminCancelCompetition(
+    competitionId: string,
+    adminId: string,
+  ): Promise<Competition> {
+    const competition = await this.competitionsRepository.findOne({
+      where: { id: competitionId },
+    });
+
+    if (!competition) {
+      throw new NotFoundException(
+        `Competition with ID "${competitionId}" not found`,
+      );
+    }
+
+    if (competition.is_cancelled) {
+      throw new ConflictException('Competition is already cancelled');
+    }
+
+    if (competition.is_finalized) {
+      throw new ConflictException('Finalized competitions cannot be cancelled');
+    }
+
+    const participants = await this.competitionParticipantsRepository.find({
+      where: { competition_id: competition.id },
+      relations: ['user'],
+    });
+
+    const totalPool = BigInt(competition.prize_pool_stroops);
+    const participantCount = participants.length;
+    const shouldRefund = totalPool > 0n && participantCount > 0;
+
+    const refundAllocations = new Map<string, string>();
+
+    if (shouldRefund) {
+      const baseRefund = totalPool / BigInt(participantCount);
+      let remainder = totalPool % BigInt(participantCount);
+
+      for (const participant of participants) {
+        const hasAddress = Boolean(participant.user?.stellar_address);
+        if (!hasAddress) {
+          refundAllocations.set(participant.user_id, '0');
+          continue;
+        }
+
+        let refundAmount = baseRefund;
+        if (remainder > 0n) {
+          refundAmount += 1n;
+          remainder -= 1n;
+        }
+
+        refundAllocations.set(participant.user_id, refundAmount.toString());
+
+        try {
+          await this.sorobanService.refundCompetitionParticipant(
+            participant.user.stellar_address,
+            competition.id,
+            refundAmount.toString(),
+          );
+        } catch (err) {
+          this.logger.error('Soroban competition refund failed', err);
+          throw new BadGatewayException(
+            'Failed to refund participants on Soroban',
+          );
+        }
+      }
+    }
+
+    competition.is_cancelled = true;
+    const savedCompetition =
+      await this.competitionsRepository.save(competition);
+
+    await Promise.all(
+      participants.map((participant) =>
+        this.notificationsService.create(
+          participant.user_id,
+          NotificationType.System,
+          'Competition Cancelled',
+          `The competition "${competition.title}" has been cancelled by an administrator.${
+            shouldRefund ? ' Any applicable refunds have been initiated.' : ''
+          }`,
+          {
+            competition_id: competition.id,
+            is_cancelled: true,
+            refunded_stroops: refundAllocations.get(participant.user_id) ?? '0',
+          },
+        ),
+      ),
+    );
+
+    await this.analyticsService.logActivity(
+      adminId,
+      'COMPETITION_CANCELLED_BY_ADMIN',
+      {
+        competition_id: competition.id,
+        participants_notified: participants.length,
+        refunds_initiated: shouldRefund,
+      },
+    );
+
+    this.logger.log(
+      `Admin ${adminId} cancelled competition "${competition.title}" (${competition.id})`,
+    );
+
+    return savedCompetition;
   }
 
   async moderateComment(
