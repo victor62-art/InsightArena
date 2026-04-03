@@ -11,6 +11,7 @@ import { Prediction } from '../predictions/entities/prediction.entity';
 import { User } from '../users/entities/user.entity';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
+import { SystemConfig } from './entities/system-config.entity';
 
 @Module({
   imports: [

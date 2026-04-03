@@ -561,6 +561,7 @@ describe('AdminService.adminCancelCompetition', () => {
           useValue: participantsRepo,
         },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
+        { provide: getRepositoryToken(SystemConfig), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: notificationsService },
         { provide: SorobanService, useValue: sorobanService },

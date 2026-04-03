@@ -51,14 +51,17 @@ describe('FlagsService', () => {
     end_time: new Date(),
     resolution_time: new Date(),
     is_resolved: false,
-    resolved_outcome: null,
+    resolved_outcome: null as any,
     is_public: true,
     is_cancelled: false,
     total_pool_stroops: '1000',
     participant_count: 0,
-    created_at: new Date(),
+    is_featured: false,
+    featured_at: null,
+    created_at: new Date('2026-04-03T23:00:00.000Z'),
   };
 
+  const mockDate = new Date('2026-04-03T23:00:00.000Z');
   const createMockFlag = (): Flag => ({
     id: 'flag-1',
     market: mockMarket,
@@ -73,7 +76,7 @@ describe('FlagsService', () => {
     resolved_by: null,
     resolved_by_user: null,
     resolved_at: null,
-    created_at: new Date(),
+    created_at: mockDate,
   });
 
   beforeEach(async () => {

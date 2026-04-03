@@ -89,7 +89,10 @@ export class AdminService {
     const updates = Object.entries(dto).filter(([, v]) => v !== undefined);
 
     for (const [key, value] of updates) {
-      await this.systemConfigRepository.save({ key, value });
+      await this.systemConfigRepository.save({
+        key,
+        value: value as unknown,
+      });
     }
 
     this.configCache = null;
